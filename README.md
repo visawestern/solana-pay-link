@@ -3,6 +3,12 @@
 Submission package for Colosseum Crypto World's Fair (Sep 14 — Oct 12 2026), Solana track.
 Static client-only product. Nothing registered/published in this round.
 
+## Demo video (round 538, agent-recorded tour, 50.6s)
+
+<video src="docs/tour.mp4" controls width="640"></video>
+
+Direct link: [docs/tour.mp4](docs/tour.mp4) · raw: https://raw.githubusercontent.com/visawestern/solana-pay-link/main/docs/tour.mp4
+
 ## Проблема / Решение
 
 Получать оплату в SOL/USDC сложно: адрес + сумма + memo теряются в чатах, плательщик
