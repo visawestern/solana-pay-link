@@ -9,6 +9,12 @@ Static client-only product. Nothing registered/published in this round.
 
 Direct link: [docs/tour.mp4](docs/tour.mp4) · raw: https://raw.githubusercontent.com/visawestern/solana-pay-link/main/docs/tour.mp4
 
+## Presentation (round 540, agent-rendered slides + TTS, 2:25)
+
+<video src="docs/presentation.mp4" controls width="640"></video>
+
+Direct link: [docs/presentation.mp4](docs/presentation.mp4) · raw: https://raw.githubusercontent.com/visawestern/solana-pay-link/main/docs/presentation.mp4
+
 ## Проблема / Решение
 
 Получать оплату в SOL/USDC сложно: адрес + сумма + memo теряются в чатах, плательщик
