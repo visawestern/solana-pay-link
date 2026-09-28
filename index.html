@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Solana Pay Link + Verify — tip-jar in one link (round 138)</title>
+<style>
+body { font-family: system-ui, -apple-system, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+nav a { margin-right: 1rem; }
+.card { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; margin-top: 1rem; }
+.mono { font-family: monospace; word-break: break-all; }
+.hint { color: #555; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<nav>
+<a href="./index.html">Home</a>
+<a href="./pay.html">Pay — generator</a>
+<a href="./verify.html">Verify — checker</a>
+<a href="./monitor.html">Monitor — BTC/EVM</a>
+<a href="./bolt11.html">BOLT11 — decoder</a>
+</nav>
+<h1>Solana Pay Link + Verify — tip-jar in one link</h1>
+<p>Static client-only submit pack (round 138). Zero backend, zero keys, zero custody. Nothing registered / published / deployed in this round.</p>
+
+<div class="card">
+<h2>Pages (local relative links, no CDN)</h2>
+<ul>
+<li><a href="./pay.html">Pay — Solana Pay URL generator</a> (copy of <span class="mono">paylink_v2/index.html</span>)</li>
+<li><a href="./verify.html">Verify — on-chain payment check</a> (copy of <span class="mono">verify_v2/index.html</span>)</li>
+<li><a href="./monitor.html">Monitor — live BTC/EVM balance demo</a> (copy of <span class="mono">demo/index.html</span>)</li>
+<li><a href="./bolt11.html">BOLT11 — local Lightning-invoice decoder</a> (copy of <span class="mono">bolt11/index.html</span>)</li>
+</ul>
+<p class="hint">All links relative (<span class="mono">./pay.html ./verify.html ./monitor.html ./bolt11.html ./index.html</span>). No CDN, no external CSS/JS. Each subpage links back here + to siblings via top nav.</p>
+</div>
+
+<div class="card">
+<h2>How to use</h2>
+<ol>
+<li><strong>Pay:</strong> open <a href="./pay.html">pay.html</a> → paste recipient wallet (NOT ATA) → amount (SOL ≤9dp, USDC ≤6dp, 0 allowed) → label/message/memo → Generate → Copy / QR-share via X/Discord → payer pays in Phantom/Solflare.</li>
+<li><strong>Verify:</strong> open <a href="./verify.html">verify.html</a> → same recipient + reference(s) from URL + expected amount → Check payment → CONFIRMED / MISMATCH / PENDING <span class="mono">[finalized]</span>. Use Re-check after payment, Search deeper for older history (5×20).</li>
+<li><strong>Monitor:</strong> open <a href="./monitor.html">monitor.html</a> → Refresh → live BTC (<span class="mono">blockstream.info</span>) + EVM (<span class="mono">blockcypher.com</span>) balances. Pre-existing demo, disclosed per Colosseum rules.</li>
+<li><strong>Local run:</strong> <span class="mono">python3 -m http.server 8766 --directory hack/app</span> → curl each page → expect 200.</li>
+</ol>
+</div>
+
+<div class="card">
+<h2>Honest limits</h2>
+<ul>
+<li><strong>devnet e2e pending — faucet dry.</strong> Full cycle "airdrop → 0.05 SOL + USDC-dev with memo → Verify green" NOT passed this round; no <span class="mono">solana airdrop</span> executed. Verification = mock harness 30/30 + read-only RPC checkers only.</li>
+<li><strong>mainnet not tested.</strong> No mainnet sends; mainnet reads only via <span class="mono">check_solana.py</span> (balance/signatures/USDC of test addr <span class="mono">GBVu...</span>).</li>
+<li>Public RPC flakes possible (429 on mainnet-beta) — mitigation: devnet switch, cache, retry. No Anchor/native program by design (rent/deposit 0, audit 0).</li>
+<li>Pre-existing code disclosed: <span class="mono">demo/</span>, <span class="mono">check_solana.py</span>, <span class="mono">solana_wallet_gen.py</span>.</li>
+<li>Registrations/submits/posts/deploys: zero.</li>
+</ul>
+</div>
+
+<div class="card">
+<h2>Stack</h2>
+<p>Static HTML+JS, zero deps. Read-only RPC: <span class="mono">getBalance, getSignaturesForAddress, getTransaction/getParsedTransaction, getTokenAccountsByOwner, getAccountInfo</span>. Output only via <span class="mono">textContent</span>. Sending happens in user wallet.</p>
+</div>
+
+<noscript><p>JavaScript required for Pay/Verify/Monitor pages.</p></noscript>
+</body>
+</html>

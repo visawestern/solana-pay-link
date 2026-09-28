@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Payment Verify v2 (verify_v2, round 76)</title>
+<style>
+body { font-family: system-ui, -apple-system, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+label { display: block; margin-top: 1rem; font-weight: bold; }
+input, select { width: 100%; padding: 0.5rem; margin-top: 0.25rem; box-sizing: border-box; }
+button { margin-top: 1rem; padding: 0.6rem 1.2rem; cursor: pointer; margin-right: 0.5rem; }
+.card { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; margin-top: 1rem; }
+.mono { font-family: monospace; word-break: break-all; }
+.status { margin-top: 1rem; color: #555; }
+.err { color: #a00; }
+.ok { color: #0a0; }
+.warn { color: #a60; }
+.hint { color: #555; font-size: 0.9rem; font-weight: normal; }
+.badge { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 6px; border: 1px solid #ccc; font-weight: bold; }
+.badge.pending { background: #f6f6f6; }
+.badge.confirmed { background: #e6f6e6; border-color: #0a0; }
+.badge.mismatch { background: #fff3e0; border-color: #a60; }
+.log { background: #f6f6f6; padding: 1rem; overflow-x: auto; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+</style>
+</head>
+<body>
+<h1>Payment Verify v2</h1>
+<p>Client-only check: recipient + reference(s) + expected amount &rarr; polls RPC
+<span class="mono">getSignaturesForAddress(recipient, limit 20, commitment finalized)</span> with
+<span class="mono">before</span>-pagination, then
+<span class="mono">getTransaction(jsonParsed, maxSupportedTransactionVersion 0, commitment finalized)</span>
+per signature. Reference must be a 32-byte non-signer read-only key bound to a transfer instruction
+(F2); failed txs (<span class="mono">meta.err</span>) are skipped (F3). No dependencies, no keys, no backend. Nothing is published.</p>
+<p class="hint">USDC SPL mint is network-specific (F8): mainnet-beta <span class="mono">EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v</span> (6 decimals), devnet test-USDC <span class="mono">4zMMC9sEqfkz6Fv5k9bwb7BG3QkDPz8eeMzmxfUX8b8</span> (6 decimals). SOL = native lamports (9 decimals).</p>
+
+<label for="recipient">Recipient address <span class="hint">(base58, must decode to 32 bytes)</span></label>
+<input id="recipient" type="text" value="GBVuX9MApyuV7q83LddTbxaerKctdg2fRaM7M5VqGJNx">
+
+<label for="reference">Reference(s) <span class="hint">(one or comma-separated several base58 pubkeys; match = ANY of them bound to the transfer ix)</span></label>
+<input id="reference" type="text" placeholder="paste reference pubkey(s) from Solana Pay URL, comma-separated for several">
+
+<label for="amount">Expected amount <span class="hint">(0 allowed per spec; SOL max 9 decimals, USDC max 6)</span></label>
+<input id="amount" type="text" inputmode="decimal" value="0.05">
+
+<label for="currency">Currency</label>
+<select id="currency">
+<option value="SOL" selected>SOL (native)</option>
+<option value="USDC">USDC (spl-token, mint per network below)</option>
+</select>
+
+<label for="rpc">RPC endpoint <span class="hint">(also selects the USDC mint network)</span></label>
+<select id="rpc">
+<option value="https://api.mainnet-beta.solana.com" selected>https://api.mainnet-beta.solana.com (mainnet-beta)</option>
+<option value="https://api.devnet.solana.com">https://api.devnet.solana.com (devnet)</option>
+</select>
+
+<div>
+<button id="check" type="button">Check payment</button>
+<button id="recheck" type="button">Re-check</button>
+<button id="deeper" type="button">Search deeper (next 20)</button>
+</div>
+<div id="status" class="status">Press Check payment.</div>
+
+<div class="card">
+<h2>Result <span id="badge" class="badge pending">PENDING</span></h2>
+<p>status: <span id="result-status" class="mono">PENDING (not checked yet)</span></p>
+<p>signature: <span id="result-sig" class="mono">-</span></p>
+<p>slot: <span id="result-slot" class="mono">-</span> | time: <span id="result-time" class="mono">-</span></p>
+<p>expected: <span id="result-expected" class="mono">-</span> | found: <span id="result-found" class="mono">-</span></p>
+<p>commitment: <span id="result-commit" class="mono">finalized</span> | confirmation: <span id="result-confirm" class="mono">-</span></p>
+<p class="hint">CONFIRMED = a reference (32-byte, non-signer, read-only) bound to the transfer instruction and amount matches (last transfer, F9). MISMATCH = reference bound but amount differs. PENDING = not found in scanned signatures (press Search deeper, F4).</p>
+</div>
+
+<div class="card">
+<h2>Details log</h2>
+<div id="log" class="log">Press Check payment.</div>
+<p class="hint">Read-only RPC: <span class="mono">getSignaturesForAddress</span> + <span class="mono">getTransaction</span> (commitment finalized).
+RPC errors are shown honestly as <span class="mono">error: &lt;msg&gt;</span> — no fake CONFIRMED.</p>
+</div>
+
+<div class="card">
+<h2>This device</h2>
+<p id="metrics-panel" class="mono">links: 0 | verifies: 0 (0/0/0) | last check: never</p>
+<button id="metrics-export" type="button">Export JSON</button>
+<button id="metrics-reset" type="button">Reset</button>
+</div>
+
+<noscript><p>JavaScript is required to verify the payment.</p></noscript>
+
+<script>
+var USDC_MINTS = {
+  mainnet: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+  devnet: '4zMMC9sEqfkz6Fv5k9bwb7BG3QkDPz8eeMzmxfUX8b8'
+};
+var BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+var PAGE = 20, MAX_PAGES = 5;
+var MAX_INT_DIGITS = 12;
+var scanCursor = { before: undefined, pages: 0, scanned: 0, skipped: 0, sigsTotal: 0, mismatch: null };
+
+/* metrics v2 (round 406): same helper as paylink + verify-side whitelist.
+ * B4 fix: ONLY terminals bump, behind whitelist CONFIRMED|MISMATCH|PENDING.
+ * Terminals (explicit): CONFIRMED in scanPage; MISMATCH/PENDING in finishNoConfirm;
+ * 0-sigs PENDING (no signatures, pages===0) = terminal PENDING (spec §2 decision 406).
+ * NEVER bump: validation errors (invalid recipient/reference/amount), checking-start
+ * setBadge('PENDING') in checkPaymentFresh, RPC-error catch in scanPage, pagination
+ * pause ("Search deeper", hasMore branch). Empty-page -> finishNoConfirm counts once
+ * inside finishNoConfirm only (no bump at that call site) to avoid double-count.
+ */
+var METRICS_KEY = 'splv2.metrics.v1';
+function metricsDefault() {
+  return {
+    links_generated: 0, verifies_total: 0,
+    verifies_CONFIRMED: 0, verifies_MISMATCH: 0, verifies_PENDING: 0,
+    last_check_iso: null, updated_iso: null
+  };
+}
+function metricsNum(x) {
+  var n = Number(x);
+  return (isFinite(n) && n > 0) ? Math.floor(n) : 0;
+}
+function metricsLoad() {
+  try {
+    var raw = localStorage.getItem(METRICS_KEY);
+    if (raw === null || raw === undefined || raw === '') return metricsDefault();
+    var m = JSON.parse(raw);
+    if (!m || typeof m !== 'object') return metricsDefault();
+    return {
+      links_generated: metricsNum(m.links_generated),
+      verifies_total: metricsNum(m.verifies_total),
+      verifies_CONFIRMED: metricsNum(m.verifies_CONFIRMED),
+      verifies_MISMATCH: metricsNum(m.verifies_MISMATCH),
+      verifies_PENDING: metricsNum(m.verifies_PENDING),
+      last_check_iso: (typeof m.last_check_iso === 'string' ? m.last_check_iso : null),
+      updated_iso: (typeof m.updated_iso === 'string' ? m.updated_iso : null)
+    };
+  } catch (e) { return null; }
+}
+function metricsSave(m) {
+  var prev = m.updated_iso;
+  try {
+    m.updated_iso = new Date().toISOString();
+    localStorage.setItem(METRICS_KEY, JSON.stringify(m));
+    return true;
+  } catch (e) {
+    try { m.updated_iso = prev; } catch (e2) {}
+    return false;
+  }
+}
+function renderMetrics(m, unavailable) {
+  try {
+    var el = document.getElementById('metrics-panel');
+    if (!el) return;
+    if (unavailable || !m) {
+      el.textContent = 'metrics: unavailable (localStorage blocked)';
+      return;
+    }
+    var lc = metricsNum(m.links_generated);
+    var t = metricsNum(m.verifies_total);
+    var c = metricsNum(m.verifies_CONFIRMED);
+    var mm = metricsNum(m.verifies_MISMATCH);
+    var p = metricsNum(m.verifies_PENDING);
+    var last = m.last_check_iso || 'never';
+    el.textContent = 'links: ' + lc + ' | verifies: ' + t + ' (' + c + '/' + mm + '/' + p + ') | last check: ' + last;
+  } catch (e) {}
+}
+function metricsBump(f) {
+  try {
+    var m = null;
+    try { m = metricsLoad(); } catch (e) { m = null; }
+    if (m === null) m = metricsDefault();
+    try { f(m); } catch (e) {}
+    var ok = false;
+    try { ok = metricsSave(m); } catch (e) { ok = false; }
+    try { renderMetrics(m, !ok); } catch (e) {}
+  } catch (e) {}
+}
+function metricsBumpVerify(state) {
+  if (state !== 'CONFIRMED' && state !== 'MISMATCH' && state !== 'PENDING') return;
+  metricsBump(function(m) {
+    m.verifies_total = metricsNum(m.verifies_total) + 1;
+    if (state === 'CONFIRMED') m.verifies_CONFIRMED = metricsNum(m.verifies_CONFIRMED) + 1;
+    else if (state === 'MISMATCH') m.verifies_MISMATCH = metricsNum(m.verifies_MISMATCH) + 1;
+    else m.verifies_PENDING = metricsNum(m.verifies_PENDING) + 1;
+    try { m.last_check_iso = new Date().toISOString(); } catch (e) {}
+  });
+}
+function metricsExport() {
+  try {
+    var m = null;
+    try { m = metricsLoad(); } catch (e) { m = null; }
+    if (m === null) m = metricsDefault();
+    var blob = new Blob([JSON.stringify(m)], { type: 'application/json' });
+    var a = document.createElement('a');
+    if (typeof URL !== 'undefined' && URL.createObjectURL) a.href = URL.createObjectURL(blob);
+    a.download = 'splv2-metrics.json';
+    document.body.appendChild(a);
+    a.click();
+    try { document.body.removeChild(a); } catch (e) {}
+  } catch (e) {}
+}
+function metricsReset() {
+  try {
+    if (!confirm('Reset local metrics?')) return;
+    var m = metricsDefault();
+    var ok = false;
+    try { ok = metricsSave(m); } catch (e) { ok = false; }
+    try { renderMetrics(m, !ok); } catch (e) {}
+  } catch (e) {}
+}
+function metricsInitPanel() {
+  try {
+    var m = null;
+    try { m = metricsLoad(); } catch (e) { m = null; }
+    if (m === null) { try { renderMetrics(null, true); } catch (e) {} }
+    else { try { renderMetrics(m, false); } catch (e) {} }
+    var ex = document.getElementById('metrics-export');
+    if (ex && ex.addEventListener) ex.addEventListener('click', metricsExport);
+    var rs = document.getElementById('metrics-reset');
+    if (rs && rs.addEventListener) rs.addEventListener('click', metricsReset);
+  } catch (e) {}
+}
+
+function mintForRpc(rpc) {
+  return (rpc && rpc.indexOf('devnet') !== -1) ? USDC_MINTS.devnet : USDC_MINTS.mainnet;
+}
+function networkForRpc(rpc) {
+  return (rpc && rpc.indexOf('devnet') !== -1) ? 'devnet' : 'mainnet-beta';
+}
+
+/* F2: base58 decode; reference must decode to exactly 32 bytes */
+var B58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+function b58decode(s) {
+  var bytes = [0];
+  for (var i = 0; i < s.length; i++) {
+    var c = B58_ALPHABET.indexOf(s[i]);
+    if (c < 0) return null;
+    var carry = c;
+    for (var j = 0; j < bytes.length; j++) {
+      carry += bytes[j] * 58;
+      bytes[j] = carry & 0xff;
+      carry >>= 8;
+    }
+    while (carry > 0) { bytes.push(carry & 0xff); carry >>= 8; }
+  }
+  var zeros = 0;
+  while (zeros < s.length && s[zeros] === '1') zeros++;
+  var out = [];
+  for (var k = 0; k < zeros; k++) out.push(0);
+  for (var m = bytes.length - 1; m >= 0; m--) out.push(bytes[m]);
+  return out;
+}
+function isValidAddress(a) { return BASE58_RE.test(a); }
+function isValidReference32(a) {
+  if (!BASE58_RE.test(a)) return false;
+  var d = b58decode(a);
+  return !!d && d.length === 32;
+}
+function parseReferences(s) {
+  if (!s) return [];
+  var parts = String(s).split(/[\s,]+/);
+  var out = [];
+  for (var i = 0; i < parts.length; i++) {
+    var t = parts[i].trim();
+    if (t) out.push(t);
+  }
+  return out;
+}
+
+/* F5: string amount parsing, decimals caps, 0 allowed */
+function decimalsFor(currency) { return currency === 'USDC' ? 6 : 9; }
+function parseAmountToUnits(s, decimals) {
+  s = String(s).trim();
+  if (!/^\d+(\.\d+)?$/.test(s)) return null;
+  var parts = s.split('.');
+  var ip = parts[0].replace(/^0+(?=\d)/, '');
+  var fp = parts.length > 1 ? parts[1] : '';
+  if (fp.length > decimals) return null;
+  if (parts[0].length > MAX_INT_DIGITS) return null;
+  while (fp.length < decimals) fp += '0';
+  var str = (ip + fp).replace(/^0+(?=\d)/, '');
+  if (str === '') str = '0';
+  try {
+    var bi = BigInt(str);
+    return bi <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(bi) : bi;
+  } catch (e) { return null; }
+}
+function isValidAmount(s, currency) {
+  if (typeof s !== 'string') s = String(s);
+  s = s.trim();
+  if (!/^\d+(\.\d+)?$/.test(s)) return false;
+  var parts = s.split('.');
+  if (parts[0].length > MAX_INT_DIGITS) return false;
+  var frac = parts.length > 1 ? parts[1] : '';
+  if (frac.length > decimalsFor(currency)) return false;
+  return parseAmountToUnits(s, decimalsFor(currency)) !== null;
+}
+
+function log(msg) {
+  var el = document.getElementById('log');
+  if (el.textContent === 'Press Check payment.') el.textContent = '';
+  el.textContent += msg + '\n';
+}
+function clearLog() { document.getElementById('log').textContent = ''; }
+function setBadge(state) {
+  var b = document.getElementById('badge');
+  b.textContent = state;
+  b.className = 'badge ' + state.toLowerCase();
+}
+function setStatus(text, cls) {
+  var el = document.getElementById('result-status');
+  el.textContent = text;
+  el.className = 'mono' + (cls ? ' ' + cls : '');
+}
+
+async function rpcCall(rpc, method, params) {
+  var res = await fetch(rpc, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: method, params: params })
+  });
+  if (!res.ok) throw new Error('RPC HTTP ' + res.status + ' on ' + method);
+  var data = await res.json();
+  if (data.error) throw new Error('RPC error on ' + method + ': ' + data.error.message);
+  return data.result;
+}
+
+function collectInstructions(tx) {
+  var out = [];
+  try {
+    var top = tx.transaction.message.instructions || [];
+    for (var i = 0; i < top.length; i++) out.push(top[i]);
+    var inner = (tx.meta && tx.meta.innerInstructions) || [];
+    for (var j = 0; j < inner.length; j++) {
+      var ins = inner[j].instructions || [];
+      for (var k = 0; k < ins.length; k++) out.push(ins[k]);
+    }
+  } catch (e) { /* honest: ignore parse shape, caller logs */ }
+  return out;
+}
+
+/* F2 helpers: full key set incl loadedAddresses (LUT), key meta (signer/writable) */
+function txKeyMeta(tx) {
+  var meta = {};
+  try {
+    var keys = tx.transaction.message.accountKeys || [];
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (typeof k === 'string') { meta[k] = { signer: false, writable: true, source: 'static-str' }; }
+      else if (k && k.pubkey) { meta[k.pubkey] = { signer: !!k.signer, writable: !!k.writable, source: 'static' }; }
+    }
+    var la = (tx.meta && tx.meta.loadedAddresses) || {};
+    var ro = la.readonly || [];
+    var wr = la.writable || [];
+    for (var r = 0; r < ro.length; r++) meta[ro[r]] = { signer: false, writable: false, source: 'lut-readonly' };
+    for (var w = 0; w < wr.length; w++) {
+      if (!meta[wr[w]]) meta[wr[w]] = { signer: false, writable: true, source: 'lut-writable' };
+    }
+  } catch (e) { /* honest ignore */ }
+  return meta;
+}
+function isSolTransferIx(ix) {
+  var p = ix && ix.parsed;
+  if (!p || p.type !== 'transfer' || !p.info) return false;
+  if (ix.program === 'system') return true;
+  /* token-program transfers also use type 'transfer' but carry no mint-less system shape */
+  if (typeof ix.program === 'string' && ix.program.indexOf('spl-token') !== -1) return false;
+  return !p.info.mint;
+}
+function isUsdcTransferIx(ix, mint) {
+  var p = ix && ix.parsed;
+  if (!p || !p.info) return false;
+  if ((p.type === 'transferChecked' || p.type === 'transferCheckedWithFee') && p.info.mint === mint) return true;
+  if (p.type === 'transfer' && typeof ix.program === 'string' && ix.program.indexOf('spl-token') !== -1) return true;
+  return false;
+}
+/* F2: reference must be 32-byte, present in tx keys, non-signer + read-only,
+   AND the tx must contain a transfer ix (of the checked currency) to the recipient.
+   F6: ANY of the references may match. Returns matched ref or null. */
+function matchReferenceInTransfer(tx, references, recipient, currency, mint) {
+  var meta = txKeyMeta(tx);
+  var ins = collectInstructions(tx);
+  var hasTransferToRecipient = false;
+  for (var i = 0; i < ins.length; i++) {
+    var p = ins[i].parsed;
+    if (!p || !p.info) continue;
+    if (currency === 'SOL') {
+      if (isSolTransferIx(ins[i]) && p.info.destination === recipient) { hasTransferToRecipient = true; break; }
+    } else {
+      if (isUsdcTransferIx(ins[i], mint)) { hasTransferToRecipient = true; break; }
+    }
+  }
+  if (!hasTransferToRecipient) return null;
+  for (var j = 0; j < references.length; j++) {
+    var ref = references[j];
+    if (!isValidReference32(ref)) continue;
+    var m = meta[ref];
+    if (!m) continue;
+    if (m.signer) continue;      /* must be non-signer */
+    if (m.writable) continue;    /* must be read-only */
+    return ref;
+  }
+  return null;
+}
+
+/* F9: LAST transfer only (spec: look at the last transfer instruction) */
+function lastSolToRecipient(tx, recipient) {
+  var last = 0, found = false;
+  var ins = collectInstructions(tx);
+  for (var i = 0; i < ins.length; i++) {
+    if (!isSolTransferIx(ins[i])) continue;
+    var p = ins[i].parsed;
+    if (p.info && p.info.destination === recipient) {
+      var lam = Number(p.info.lamports);
+      if (isFinite(lam) && lam >= 0) { last = lam; found = true; }
+    }
+  }
+  return found ? last : 0;
+}
+
+/* token accounts owned by recipient: accountIndex -> pubkey via accountKeys */
+function recipientOwnedTokenAccounts(tx, recipient) {
+  var set = {};
+  try {
+    var keys = tx.transaction.message.accountKeys || [];
+    var pubAt = function(idx) {
+      var k = keys[idx];
+      if (typeof k === 'string') return k;
+      return (k && k.pubkey) || null;
+    };
+    var bals = [];
+    var pre = (tx.meta && tx.meta.preTokenBalances) || [];
+    var post = (tx.meta && tx.meta.postTokenBalances) || [];
+    for (var i = 0; i < pre.length; i++) bals.push(pre[i]);
+    for (var j = 0; j < post.length; j++) bals.push(post[j]);
+    for (var b = 0; b < bals.length; b++) {
+      if (bals[b].owner === recipient) {
+        var pub = pubAt(bals[b].accountIndex);
+        if (pub) set[pub] = true;
+      }
+    }
+  } catch (e) { /* honest ignore */ }
+  return set;
+}
+
+function sumUsdcToRecipient(tx, recipient, mint) {
+  /* Primary: net token-balance diff for the mint owned by recipient. */
+  var sum = 0;
+  var found = false;
+  try {
+    var pre = (tx.meta && tx.meta.preTokenBalances) || [];
+    var post = (tx.meta && tx.meta.postTokenBalances) || [];
+    var preByAcct = {};
+    for (var i = 0; i < pre.length; i++) {
+      if (pre[i].mint === mint && pre[i].owner === recipient) {
+        var a = Number(pre[i].uiTokenAmount && pre[i].uiTokenAmount.amount || 0);
+        preByAcct[pre[i].accountIndex] = isFinite(a) ? a : 0;
+      }
+    }
+    for (var j = 0; j < post.length; j++) {
+      if (post[j].mint === mint && post[j].owner === recipient) {
+        var b = Number(post[j].uiTokenAmount && post[j].uiTokenAmount.amount || 0);
+        if (!isFinite(b)) b = 0;
+        var pa = preByAcct[post[j].accountIndex] || 0;
+        if (b - pa > 0) { sum += (b - pa); found = true; }
+      }
+    }
+  } catch (e) { /* honest ignore */ }
+  if (found) return sum;
+  /* F1 fallback: transferChecked amounts ONLY if destination is provably the
+     recipient (or a recipient-owned token account). Otherwise 0 — never count
+     transfers to strangers. F9: take the LAST matching ix, not the sum. */
+  var owned = recipientOwnedTokenAccounts(tx, recipient);
+  var ownedEmpty = true;
+  for (var k in owned) { ownedEmpty = false; break; }
+  var ins = collectInstructions(tx);
+  var last = 0, f2 = false;
+  for (var m = 0; m < ins.length; m++) {
+    var p = ins[m].parsed;
+    if (!p || !p.info) continue;
+    if ((p.type === 'transferChecked' || p.type === 'transferCheckedWithFee') && p.info.mint === mint) {
+      var dest = p.info.destination;
+      var okDest = (dest === recipient) || (!ownedEmpty && !!owned[dest]);
+      if (!okDest) continue;
+      var amt = p.info.tokenAmount && p.info.tokenAmount.amount;
+      var n = Number(amt);
+      if (isFinite(n) && n >= 0) { last = n; f2 = true; }
+    }
+  }
+  return f2 ? last : 0;
+}
+
+function resetCursor() {
+  scanCursor = { before: undefined, pages: 0, scanned: 0, skipped: 0, sigsTotal: 0, mismatch: null };
+}
+
+async function scanPage(recipient, references, expectedStr, currency, mint, rpc, startFresh) {
+  var status = document.getElementById('status');
+  if (startFresh) {
+    resetCursor();
+    clearLog();
+  }
+  var unitName = (currency === 'SOL') ? 'lamports' : 'USDC base units (6dp)';
+  document.getElementById('result-commit').textContent = 'finalized';
+  status.textContent = 'Checking getSignaturesForAddress (page ' + (scanCursor.pages + 1) + ')...';
+  var params = { limit: PAGE, commitment: 'finalized' };
+  if (scanCursor.before) params.before = scanCursor.before;
+  log('rpc: getSignaturesForAddress [' + recipient + ', ' + JSON.stringify(params) + '] @ ' + rpc);
+
+  var sigs;
+  try {
+    sigs = await rpcCall(rpc, 'getSignaturesForAddress', [recipient, params]);
+  } catch (e) {
+    setBadge('PENDING');
+    setStatus('error: ' + e.message, 'err');
+    status.textContent = 'RPC check failed honestly — no fake result shown. Try the other endpoint, then Re-check.';
+    log('error: ' + e.message);
+    return;
+  }
+  if ((!sigs || !sigs.length) && scanCursor.pages === 0) {
+    setBadge('PENDING');
+    setStatus('PENDING (no signatures for address)', 'warn');
+    document.getElementById('result-found').textContent = 'none (0 signatures)';
+    status.textContent = 'Updated ' + new Date().toISOString() + ' (live RPC finalized, no mock). Press Re-check after payment.';
+    log('signatures: 0 — address has no history in this RPC view.');
+    try { metricsBumpVerify('PENDING'); } catch (e) {}
+    return;
+  }
+  if (!sigs || !sigs.length) {
+    setBadge(scanCursor.mismatch ? 'MISMATCH' : 'PENDING');
+    finishNoConfirm(sigs);
+    return;
+  }
+  scanCursor.pages++;
+  scanCursor.sigsTotal += sigs.length;
+  scanCursor.before = sigs[sigs.length - 1].signature;
+  log('signatures page ' + scanCursor.pages + ': ' + sigs.length + ' (cursor before=' + scanCursor.before + ')');
+  status.textContent = 'Scanning ' + sigs.length + ' transaction(s) for reference (page ' + scanCursor.pages + ')...';
+
+  for (var i = 0; i < sigs.length; i++) {
+    var s = sigs[i];
+    var sig = s.signature;
+    log('[' + (scanCursor.scanned + scanCursor.skipped + 1) + '] getTransaction ' + sig);
+    var tx = null;
+    try {
+      tx = await rpcCall(rpc, 'getTransaction', [sig, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'finalized' }]);
+    } catch (e) {
+      log('  error: ' + e.message + ' — skipped honestly');
+      scanCursor.skipped++;
+      continue;
+    }
+    if (!tx) { log('  null (pruned/unconfirmed) — skipped'); scanCursor.skipped++; continue; }
+    /* F3: drop failed txs, show confirmation status */
+    if (tx.meta && tx.meta.err !== null && tx.meta.err !== undefined) {
+      log('  meta.err present (' + JSON.stringify(tx.meta.err) + ') — failed tx skipped');
+      scanCursor.skipped++;
+      continue;
+    }
+    var cstat = (tx.confirmationStatus || s.confirmationStatus || 'unknown');
+    scanCursor.scanned++;
+    var matched = matchReferenceInTransfer(tx, references, recipient, currency, mint);
+    if (!matched) { log('  no bound reference in transfer ix (confirmationStatus=' + cstat + ')'); continue; }
+    log('  reference BOUND to transfer ix: ' + matched + ' (confirmationStatus=' + cstat + ')');
+    var foundUnits = (currency === 'SOL') ? lastSolToRecipient(tx, recipient) : sumUsdcToRecipient(tx, recipient, mint);
+    var slot = (tx.slot !== undefined) ? String(tx.slot) : String(s.slot || '?');
+    var bt = s.blockTime || tx.blockTime;
+    var tiso = bt ? new Date(bt * 1000).toISOString() : '(unknown time)';
+    log('  amount found: ' + String(foundUnits) + ' ' + unitName + ' (expected ' + expectedStr + ')');
+    if (String(foundUnits) === String(expectedStr)) {
+      setBadge('CONFIRMED');
+      setStatus('CONFIRMED [finalized]', 'ok');
+      document.getElementById('result-sig').textContent = sig;
+      document.getElementById('result-slot').textContent = slot;
+      document.getElementById('result-time').textContent = tiso;
+      document.getElementById('result-found').textContent =
+        String(foundUnits) + ' ' + unitName;
+      document.getElementById('result-confirm').textContent = cstat + ' (scanned ' + scanCursor.sigsTotal + ')';
+      status.textContent = 'Updated ' + new Date().toISOString() + ' (live RPC finalized, no mock).';
+      log('CONFIRMED sig=' + sig + ' slot=' + slot + ' time=' + tiso);
+      try { metricsBumpVerify('CONFIRMED'); } catch (e) {}
+      return;
+    }
+    if (!scanCursor.mismatch) {
+      scanCursor.mismatch = { sig: sig, slot: slot, tiso: tiso, found: foundUnits, cstat: cstat };
+      log('  MISMATCH candidate recorded (keep scanning for exact match)');
+    }
+  }
+
+  var hasMore = sigs.length === PAGE && scanCursor.pages < MAX_PAGES;
+  if (hasMore) {
+    setBadge(scanCursor.mismatch ? 'MISMATCH' : 'PENDING');
+    status.textContent = 'Page ' + scanCursor.pages + ' scanned (' + scanCursor.sigsTotal + ' sigs) — no exact match. Press "Search deeper (next 20)".';
+    log('page done: scanned total ' + scanCursor.sigsTotal + '. More history may exist — press Search deeper.');
+    return;
+  }
+  finishNoConfirm(sigs);
+}
+
+function finishNoConfirm() {
+  if (scanCursor.mismatch) {
+    var mm = scanCursor.mismatch;
+    setBadge('MISMATCH');
+    setStatus('MISMATCH (reference bound, amount differs) [finalized]', 'warn');
+    document.getElementById('result-sig').textContent = mm.sig;
+    document.getElementById('result-slot').textContent = mm.slot;
+    document.getElementById('result-time').textContent = mm.tiso;
+    document.getElementById('result-found').textContent = String(mm.found) + ' (expected differs)';
+    document.getElementById('result-confirm').textContent = mm.cstat + ' (scanned ' + scanCursor.sigsTotal + ', skipped ' + scanCursor.skipped + ')';
+    document.getElementById('status').textContent = 'Updated ' + new Date().toISOString() + ' (live RPC finalized, no mock). MISMATCH — amount differs.';
+    log('MISMATCH sig=' + mm.sig + ' found=' + String(mm.found));
+    try { metricsBumpVerify('MISMATCH'); } catch (e) {}
+    return;
+  }
+  setBadge('PENDING');
+  setStatus('PENDING (no bound reference in last ' + scanCursor.sigsTotal + ') [finalized]', 'warn');
+  document.getElementById('result-found').textContent = 'none (scanned ' + scanCursor.scanned + ', skipped ' + scanCursor.skipped + ')';
+  document.getElementById('result-confirm').textContent = 'n/a (scanned ' + scanCursor.sigsTotal + ')';
+  document.getElementById('status').textContent = 'Updated ' + new Date().toISOString() + ' (live RPC finalized, no mock). Press Re-check after payment.';
+  log('PENDING: no bound reference in last ' + scanCursor.sigsTotal + ' (scanned ' + scanCursor.scanned + ', skipped ' + scanCursor.skipped + ')');
+  try { metricsBumpVerify('PENDING'); } catch (e) {}
+}
+
+async function checkPaymentFresh() {
+  var recipient = document.getElementById('recipient').value.trim();
+  var refRaw = document.getElementById('reference').value.trim();
+  var amountStr = document.getElementById('amount').value.trim();
+  var currency = document.getElementById('currency').value;
+  var rpc = document.getElementById('rpc').value;
+  var mint = mintForRpc(rpc);
+  var net = networkForRpc(rpc);
+  clearLog();
+
+  if (!isValidAddress(recipient) || !isValidReference32(recipient)) {
+    setBadge('PENDING');
+    setStatus('error: invalid recipient address (need base58 decoding to 32 bytes)', 'err');
+    document.getElementById('status').textContent = 'Fix the recipient address, then press Check payment.';
+    return;
+  }
+  var references = parseReferences(refRaw);
+  if (!references.length) {
+    setBadge('PENDING');
+    setStatus('error: reference required (at least one base58 pubkey)', 'err');
+    document.getElementById('status').textContent = 'Paste the reference, then press Check payment.';
+    return;
+  }
+  for (var i = 0; i < references.length; i++) {
+    if (!isValidReference32(references[i])) {
+      setBadge('PENDING');
+      setStatus('error: invalid reference #' + (i + 1) + ' (need base58 decoding to 32 bytes)', 'err');
+      document.getElementById('status').textContent = 'Fix the reference(s), then press Check payment.';
+      return;
+    }
+  }
+  if (!isValidAmount(amountStr, currency)) {
+    setBadge('PENDING');
+    setStatus('error: invalid amount (need decimal, 0 allowed, max ' + decimalsFor(currency) + ' fraction digits for ' + currency + ')', 'err');
+    document.getElementById('status').textContent = 'Fix the amount, then press Check payment.';
+    return;
+  }
+
+  var expectedUnits = parseAmountToUnits(amountStr, decimalsFor(currency));
+  var unitName = (currency === 'SOL') ? 'lamports' : 'USDC base units (6dp)';
+  document.getElementById('result-expected').textContent =
+    amountStr + ' ' + currency + ' = ' + String(expectedUnits) + ' ' + unitName + ' [mint ' + net + ': ' + (currency === 'USDC' ? mint : 'native') + ']';
+
+  setBadge('PENDING');
+  setStatus('PENDING (checking...)', '');
+  document.getElementById('result-sig').textContent = '-';
+  document.getElementById('result-slot').textContent = '-';
+  document.getElementById('result-time').textContent = '-';
+  document.getElementById('result-found').textContent = '-';
+  document.getElementById('result-confirm').textContent = '-';
+  await scanPage(recipient, references, String(expectedUnits), currency, mint, rpc, true);
+}
+
+async function searchDeeper() {
+  var recipient = document.getElementById('recipient').value.trim();
+  var refRaw = document.getElementById('reference').value.trim();
+  var amountStr = document.getElementById('amount').value.trim();
+  var currency = document.getElementById('currency').value;
+  var rpc = document.getElementById('rpc').value;
+  var mint = mintForRpc(rpc);
+  if (!scanCursor.before) {
+    document.getElementById('status').textContent = 'Nothing to paginate yet — press Check payment first.';
+    return;
+  }
+  if (scanCursor.pages >= MAX_PAGES) {
+    document.getElementById('status').textContent = 'Depth limit reached (' + MAX_PAGES * PAGE + ' signatures). The payment is older than the scan window — PENDING stays honest.';
+    log('depth limit: ' + (MAX_PAGES * PAGE) + ' signatures scanned, stopping.');
+    return;
+  }
+  var expectedUnits = parseAmountToUnits(amountStr, decimalsFor(currency));
+  var references = parseReferences(refRaw);
+  await scanPage(recipient, references, String(expectedUnits), currency, mint, rpc, false);
+}
+
+document.getElementById('check').addEventListener('click', checkPaymentFresh);
+document.getElementById('recheck').addEventListener('click', checkPaymentFresh);
+document.getElementById('deeper').addEventListener('click', searchDeeper);
+try { metricsInitPanel(); } catch (e) {}
+</script>
+</body>
+</html>

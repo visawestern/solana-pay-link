@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Solana Pay Link Generator v2 (paylink_v2, round 76)</title>
+<style>
+body { font-family: system-ui, -apple-system, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+label { display: block; margin-top: 1rem; font-weight: bold; }
+input, select { width: 100%; padding: 0.5rem; margin-top: 0.25rem; box-sizing: border-box; }
+button { margin-top: 1rem; padding: 0.6rem 1.2rem; cursor: pointer; margin-right: 0.5rem; }
+.card { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; margin-top: 1rem; }
+.mono { font-family: monospace; word-break: break-all; }
+.status { margin-top: 1rem; color: #555; }
+.err { color: #a00; }
+.ok { color: #0a0; }
+.warn { color: #a60; }
+pre.ascii { background: #f6f6f6; padding: 1rem; overflow-x: auto; font-size: 12px; }
+.hint { color: #555; font-size: 0.9rem; font-weight: normal; }
+.count { color: #555; font-size: 0.8rem; font-weight: normal; }
+</style>
+</head>
+<body>
+<h1>Solana Pay Link Generator v2</h1>
+<p>Client-only generator of a Solana Pay URL (<span class="mono">solana:address?amount=&amp;spl-token=&amp;reference=&amp;label=&amp;message=&amp;memo=</span>). No dependencies, no keys, no backend. Round-76 fixes: F2/F5/F6/F7/F8/F10. Nothing is published.</p>
+<p class="hint">USDC SPL mint is network-specific (F8): mainnet-beta <span class="mono">EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v</span>, devnet test-USDC <span class="mono">4zMMC9sEqfkz6Fv5k9bwb7BG3QkDPz8eeMzmxfUX8b8</span>. SOL transfers omit <span class="mono">spl-token</span>.</p>
+<p class="hint">F10 hint: recipient must be the merchant wallet (native SOL account / SPL-token owner). Do NOT paste an ATA (associated token account) here — the wallet derives the ATA from recipient + spl-token mint by itself.</p>
+
+<label for="recipient">Recipient address <span class="hint">(base58, must decode to 32 bytes)</span></label>
+<input id="recipient" type="text" value="GBVuX9MApyuV7q83LddTbxaerKctdg2fRaM7M5VqGJNx">
+
+<label for="amount">Amount <span class="hint">(0 allowed per spec; SOL max 9 decimals, USDC max 6)</span></label>
+<input id="amount" type="text" inputmode="decimal" value="0.05">
+
+<label for="currency">Currency</label>
+<select id="currency">
+<option value="SOL" selected>SOL (native, no spl-token)</option>
+<option value="USDC">USDC (spl-token, mint per network below)</option>
+</select>
+
+<label for="label">Label <span class="hint">(optional, shown in wallet)</span> <span id="label-count" class="count">7 / 50</span></label>
+<input id="label" type="text" value="tip-jar" maxlength="60">
+
+<label for="message">Message <span class="hint">(optional, shown in wallet)</span> <span id="message-count" class="count">21 / 200</span></label>
+<input id="message" type="text" value="Thanks for the stream!" maxlength="220">
+
+<label for="memo">Memo <span class="hint">(optional, on-chain Memo)</span> <span id="memo-count" class="count">11 / 200</span></label>
+<input id="memo" type="text" value="paylink-001" maxlength="220">
+<p class="hint">F7 warning: memo is written ON-CHAIN and is PUBLIC forever — never put private info (names, emails, order secrets) in memo.</p>
+
+<label for="reference">Reference(s) <span class="hint">(optional; one or comma-separated several base58 pubkeys, each must decode to 32 bytes; spec allows multiple reference=)</span></label>
+<input id="reference" type="text" placeholder="(empty = omit reference) or REF1,REF2">
+
+<label for="rpc">RPC endpoint <span class="hint">(only for Check address via getAccountInfo; also selects the USDC mint network)</span></label>
+<select id="rpc">
+<option value="https://api.mainnet-beta.solana.com" selected>https://api.mainnet-beta.solana.com (mainnet-beta)</option>
+<option value="https://api.devnet.solana.com">https://api.devnet.solana.com (devnet)</option>
+</select>
+
+<div>
+<button id="generate" type="button">Generate link</button>
+<button id="copy" type="button">Copy</button>
+<button id="check" type="button">Check address via RPC getAccountInfo</button>
+</div>
+<div id="status" class="status">Press Generate link.</div>
+
+<div class="card">
+<h2>Solana Pay URL</h2>
+<p id="validation" class="mono">-</p>
+<p>solana URL: <span id="solurl" class="mono">-</span></p>
+<p>amount: <span id="out-amount" class="mono">-</span> | spl-token: <span id="out-token" class="mono">-</span></p>
+<p>label: <span id="out-label" class="mono">-</span> | message: <span id="out-message" class="mono">-</span> | memo: <span id="out-memo" class="mono">-</span> | reference: <span id="out-ref" class="mono">-</span></p>
+<p class="hint">ATA hint (F10): the recipient above is used as-is. If you pasted a token account (ATA) instead of the wallet, generate again with the wallet address.</p>
+</div>
+
+<div class="card">
+<h2>ASCII representation of the link</h2>
+<pre id="ascii" class="ascii">Press Generate link.</pre>
+</div>
+
+<div class="card">
+<h2>RPC address check (getAccountInfo, commitment finalized)</h2>
+<p>result: <span id="rpc-result" class="mono">-</span></p>
+<p class="hint">Read-only POST <span class="mono">getAccountInfo</span> to the selected RPC (commitment finalized). If RPC is unreachable, an honest <span class="mono">error: &lt;msg&gt;</span> is shown — no fake success.</p>
+</div>
+
+<div class="card">
+<h2>This device</h2>
+<p id="metrics-panel" class="mono">links: 0 | verifies: 0 (0/0/0) | last check: never</p>
+<button id="metrics-export" type="button">Export JSON</button>
+<button id="metrics-reset" type="button">Reset</button>
+</div>
+
+<noscript><p>JavaScript is required to build the Solana Pay URL.</p></noscript>
+
+<script>
+var USDC_MINTS = {
+  mainnet: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+  devnet: '4zMMC9sEqfkz6Fv5k9bwb7BG3QkDPz8eeMzmxfUX8b8'
+};
+var BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+var LABEL_MAX = 50, MESSAGE_MAX = 200, MEMO_MAX = 200;
+var MAX_INT_DIGITS = 12;
+
+/* metrics v2 (round 406): localStorage-only, zero network, zero PII.
+ * Fixes round-405 blockers B1-B5:
+ * B1: metricsDefault() defined (no metricsLoad0); B2: renderMetrics() defined;
+ * B3: metricsBump() never throws (inner try/catch) + outer try/catch at call site;
+ * B4: verify-side whitelist lives in verify file; B5: panel+Export+Reset+unavailable below.
+ */
+var METRICS_KEY = 'splv2.metrics.v1';
+function metricsDefault() {
+  return {
+    links_generated: 0, verifies_total: 0,
+    verifies_CONFIRMED: 0, verifies_MISMATCH: 0, verifies_PENDING: 0,
+    last_check_iso: null, updated_iso: null
+  };
+}
+function metricsNum(x) {
+  var n = Number(x);
+  return (isFinite(n) && n > 0) ? Math.floor(n) : 0;
+}
+function metricsLoad() {
+  try {
+    var raw = localStorage.getItem(METRICS_KEY);
+    if (raw === null || raw === undefined || raw === '') return metricsDefault();
+    var m = JSON.parse(raw);
+    if (!m || typeof m !== 'object') return metricsDefault();
+    return {
+      links_generated: metricsNum(m.links_generated),
+      verifies_total: metricsNum(m.verifies_total),
+      verifies_CONFIRMED: metricsNum(m.verifies_CONFIRMED),
+      verifies_MISMATCH: metricsNum(m.verifies_MISMATCH),
+      verifies_PENDING: metricsNum(m.verifies_PENDING),
+      last_check_iso: (typeof m.last_check_iso === 'string' ? m.last_check_iso : null),
+      updated_iso: (typeof m.updated_iso === 'string' ? m.updated_iso : null)
+    };
+  } catch (e) { return null; }
+}
+function metricsSave(m) {
+  var prev = m.updated_iso;
+  try {
+    m.updated_iso = new Date().toISOString();
+    localStorage.setItem(METRICS_KEY, JSON.stringify(m));
+    return true;
+  } catch (e) {
+    try { m.updated_iso = prev; } catch (e2) {}
+    return false;
+  }
+}
+function renderMetrics(m, unavailable) {
+  try {
+    var el = document.getElementById('metrics-panel');
+    if (!el) return;
+    if (unavailable || !m) {
+      el.textContent = 'metrics: unavailable (localStorage blocked)';
+      return;
+    }
+    var lc = metricsNum(m.links_generated);
+    var t = metricsNum(m.verifies_total);
+    var c = metricsNum(m.verifies_CONFIRMED);
+    var mm = metricsNum(m.verifies_MISMATCH);
+    var p = metricsNum(m.verifies_PENDING);
+    var last = m.last_check_iso || 'never';
+    el.textContent = 'links: ' + lc + ' | verifies: ' + t + ' (' + c + '/' + mm + '/' + p + ') | last check: ' + last;
+  } catch (e) {}
+}
+function metricsBump(f) {
+  try {
+    var m = null;
+    try { m = metricsLoad(); } catch (e) { m = null; }
+    if (m === null) m = metricsDefault();
+    try { f(m); } catch (e) {}
+    var ok = false;
+    try { ok = metricsSave(m); } catch (e) { ok = false; }
+    try { renderMetrics(m, !ok); } catch (e) {}
+  } catch (e) {}
+}
+function metricsBumpLinks() {
+  metricsBump(function(m) { m.links_generated = metricsNum(m.links_generated) + 1; });
+}
+function metricsExport() {
+  try {
+    var m = null;
+    try { m = metricsLoad(); } catch (e) { m = null; }
+    if (m === null) m = metricsDefault();
+    var blob = new Blob([JSON.stringify(m)], { type: 'application/json' });
+    var a = document.createElement('a');
+    if (typeof URL !== 'undefined' && URL.createObjectURL) a.href = URL.createObjectURL(blob);
+    a.download = 'splv2-metrics.json';
+    document.body.appendChild(a);
+    a.click();
+    try { document.body.removeChild(a); } catch (e) {}
+  } catch (e) {}
+}
+function metricsReset() {
+  try {
+    if (!confirm('Reset local metrics?')) return;
+    var m = metricsDefault();
+    var ok = false;
+    try { ok = metricsSave(m); } catch (e) { ok = false; }
+    try { renderMetrics(m, !ok); } catch (e) {}
+  } catch (e) {}
+}
+function metricsInitPanel() {
+  try {
+    var m = null;
+    try { m = metricsLoad(); } catch (e) { m = null; }
+    if (m === null) { try { renderMetrics(null, true); } catch (e) {} }
+    else { try { renderMetrics(m, false); } catch (e) {} }
+    var ex = document.getElementById('metrics-export');
+    if (ex && ex.addEventListener) ex.addEventListener('click', metricsExport);
+    var rs = document.getElementById('metrics-reset');
+    if (rs && rs.addEventListener) rs.addEventListener('click', metricsReset);
+  } catch (e) {}
+}
+
+function mintForRpc(rpc) {
+  return (rpc && rpc.indexOf('devnet') !== -1) ? USDC_MINTS.devnet : USDC_MINTS.mainnet;
+}
+function networkForRpc(rpc) {
+  return (rpc && rpc.indexOf('devnet') !== -1) ? 'devnet' : 'mainnet-beta';
+}
+
+/* F2: base58 decode -> bytes; reference must decode to exactly 32 bytes */
+var B58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+function b58decode(s) {
+  var bytes = [0];
+  for (var i = 0; i < s.length; i++) {
+    var c = B58_ALPHABET.indexOf(s[i]);
+    if (c < 0) return null;
+    var carry = c;
+    for (var j = 0; j < bytes.length; j++) {
+      carry += bytes[j] * 58;
+      bytes[j] = carry & 0xff;
+      carry >>= 8;
+    }
+    while (carry > 0) { bytes.push(carry & 0xff); carry >>= 8; }
+  }
+  var zeros = 0;
+  while (zeros < s.length && s[zeros] === '1') zeros++;
+  var out = [];
+  for (var k = 0; k < zeros; k++) out.push(0);
+  for (var m = bytes.length - 1; m >= 0; m--) out.push(bytes[m]);
+  return out;
+}
+function isValidAddress(a) { return BASE58_RE.test(a); }
+/* F2 strict: base58 shape + decodes to 32 bytes */
+function isValidReference32(a) {
+  if (!BASE58_RE.test(a)) return false;
+  var d = b58decode(a);
+  return !!d && d.length === 32;
+}
+/* F6: comma/space separated reference list */
+function parseReferences(s) {
+  if (!s) return [];
+  var parts = String(s).split(/[\s,]+/);
+  var out = [];
+  for (var i = 0; i < parts.length; i++) {
+    var t = parts[i].trim();
+    if (t) out.push(t);
+  }
+  return out;
+}
+
+/* F5: string amount parsing, decimals caps, 0 allowed */
+function decimalsFor(currency) { return currency === 'USDC' ? 6 : 9; }
+function isValidAmount(s, currency) {
+  if (typeof s !== 'string') s = String(s);
+  s = s.trim();
+  if (!/^\d+(\.\d+)?$/.test(s)) return false;
+  var parts = s.split('.');
+  if (parts[0].length > MAX_INT_DIGITS) return false;
+  var frac = parts.length > 1 ? parts[1] : '';
+  if (frac.length > decimalsFor(currency)) return false;
+  var units = parseAmountToUnits(s, decimalsFor(currency));
+  return units !== null;
+}
+/* F5: exact string -> integer base units (no float), returns Number when safe else BigInt */
+function parseAmountToUnits(s, decimals) {
+  s = String(s).trim();
+  if (!/^\d+(\.\d+)?$/.test(s)) return null;
+  var parts = s.split('.');
+  var ip = parts[0].replace(/^0+(?=\d)/, '');
+  var fp = parts.length > 1 ? parts[1] : '';
+  if (fp.length > decimals) return null;
+  if (parts[0].length > MAX_INT_DIGITS) return null;
+  while (fp.length < decimals) fp += '0';
+  var str = (ip + fp).replace(/^0+(?=\d)/, '');
+  if (str === '') str = '0';
+  try {
+    var bi = BigInt(str);
+    return bi <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(bi) : bi;
+  } catch (e) { return null; }
+}
+
+function buildSolanaUrl(recipient, amount, currency, mint, label, message, memo, references) {
+  var base = 'solana:' + recipient;
+  var q = [];
+  if (amount !== '' && amount !== null && amount !== undefined) q.push('amount=' + encodeURIComponent(amount));
+  if (currency === 'USDC') q.push('spl-token=' + encodeURIComponent(mint));
+  for (var i = 0; i < references.length; i++) q.push('reference=' + encodeURIComponent(references[i]));
+  if (label) q.push('label=' + encodeURIComponent(label));
+  if (message) q.push('message=' + encodeURIComponent(message));
+  if (memo) q.push('memo=' + encodeURIComponent(memo));
+  return q.length ? base + '?' + q.join('&') : base;
+}
+
+function asciiBox(url) {
+  var w = url.length + 4;
+  var bar = '+' + new Array(w - 1).join('-') + '+';
+  return bar + '\n| ' + url + ' |\n' + bar;
+}
+
+function updateCounts() {
+  var l = document.getElementById('label').value;
+  var m = document.getElementById('message').value;
+  var mo = document.getElementById('memo').value;
+  document.getElementById('label-count').textContent = String(l.length) + ' / ' + LABEL_MAX;
+  document.getElementById('message-count').textContent = String(m.length) + ' / ' + MESSAGE_MAX;
+  document.getElementById('memo-count').textContent = String(mo.length) + ' / ' + MEMO_MAX;
+}
+
+function generate() {
+  var recipient = document.getElementById('recipient').value.trim();
+  var amount = document.getElementById('amount').value.trim();
+  var currency = document.getElementById('currency').value;
+  var label = document.getElementById('label').value.trim();
+  var message = document.getElementById('message').value.trim();
+  var memo = document.getElementById('memo').value.trim();
+  var refRaw = document.getElementById('reference').value.trim();
+  var rpc = document.getElementById('rpc').value;
+  var mint = mintForRpc(rpc);
+  var net = networkForRpc(rpc);
+  var status = document.getElementById('status');
+  var validation = document.getElementById('validation');
+
+  if (!isValidAddress(recipient) || !isValidReference32(recipient)) {
+    validation.textContent = 'error: invalid recipient address (need base58 decoding to 32 bytes)';
+    validation.className = 'mono err';
+    status.textContent = 'Fix the recipient address, then press Generate link.';
+    return null;
+  }
+  if (!isValidAmount(amount, currency)) {
+    validation.textContent = 'error: invalid amount (need decimal, 0 allowed, max ' +
+      decimalsFor(currency) + ' fraction digits for ' + currency + ', e.g. 0.05)';
+    validation.className = 'mono err';
+    status.textContent = 'Fix the amount, then press Generate link.';
+    return null;
+  }
+  /* F7: soft length caps enforced */
+  if (label.length > LABEL_MAX) {
+    validation.textContent = 'error: label too long (' + label.length + ' > ' + LABEL_MAX + ' chars)';
+    validation.className = 'mono err';
+    status.textContent = 'Shorten the label, then press Generate link.';
+    return null;
+  }
+  if (message.length > MESSAGE_MAX) {
+    validation.textContent = 'error: message too long (' + message.length + ' > ' + MESSAGE_MAX + ' chars)';
+    validation.className = 'mono err';
+    status.textContent = 'Shorten the message, then press Generate link.';
+    return null;
+  }
+  if (memo.length > MEMO_MAX) {
+    validation.textContent = 'error: memo too long (' + memo.length + ' > ' + MEMO_MAX + ' chars; memo is on-chain public)';
+    validation.className = 'mono err';
+    status.textContent = 'Shorten the memo, then press Generate link.';
+    return null;
+  }
+  var references = parseReferences(refRaw);
+  for (var i = 0; i < references.length; i++) {
+    if (!isValidReference32(references[i])) {
+      validation.textContent = 'error: invalid reference #' + (i + 1) + ' (need base58 decoding to 32 bytes)';
+      validation.className = 'mono err';
+      status.textContent = 'Fix the reference(s), then press Generate link.';
+      return null;
+    }
+  }
+  var url = buildSolanaUrl(recipient, amount, currency, mint, label, message, memo, references);
+  var units = parseAmountToUnits(amount, decimalsFor(currency));
+  validation.textContent = 'ok: address valid (base58, 32 bytes); amount = ' + String(units) +
+    ' base units; mint[' + net + ']=' + (currency === 'USDC' ? mint : '(native SOL)');
+  validation.className = 'mono ok';
+  document.getElementById('solurl').textContent = url;
+  document.getElementById('out-amount').textContent = amount + ' ' + currency + ' = ' + String(units) + ' base units';
+  document.getElementById('out-token').textContent = (currency === 'USDC') ? mint + ' [' + net + ']' : '(native SOL)';
+  document.getElementById('out-label').textContent = label || '(none)';
+  document.getElementById('out-message').textContent = message || '(none)';
+  document.getElementById('out-memo').textContent = memo ? memo + ' (PUBLIC on-chain!)' : '(none)';
+  document.getElementById('out-ref').textContent = references.length ? references.join(', ') : '(none)';
+  document.getElementById('ascii').textContent = asciiBox(url);
+  status.textContent = 'Updated ' + new Date().toISOString() + ' (built locally, no mock).';
+  try { metricsBumpLinks(); } catch (e) {}
+  return url;
+}
+
+async function copyUrl() {
+  var status = document.getElementById('status');
+  var url = document.getElementById('solurl').textContent;
+  if (!url || url === '-') {
+    url = generate();
+    if (!url) return;
+  }
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(url);
+    } else {
+      var ta = document.createElement('textarea');
+      ta.value = url;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    status.textContent = 'Copied solana URL to clipboard (' + url.length + ' chars).';
+  } catch (e) {
+    status.textContent = 'error: copy failed: ' + e.message;
+  }
+}
+
+async function checkAddress() {
+  var recipient = document.getElementById('recipient').value.trim();
+  var rpc = document.getElementById('rpc').value;
+  var out = document.getElementById('rpc-result');
+  var status = document.getElementById('status');
+  if (!isValidAddress(recipient)) {
+    out.textContent = 'error: invalid address (need base58 32-44 chars)';
+    return;
+  }
+  out.textContent = 'checking getAccountInfo (finalized)...';
+  try {
+    var res = await fetch(rpc, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getAccountInfo', params: [recipient, { encoding: 'base64', commitment: 'finalized' }] })
+    });
+    if (!res.ok) throw new Error('RPC HTTP ' + res.status);
+    var data = await res.json();
+    if (data.error) throw new Error('RPC error: ' + data.error.message);
+    var v = data.result && data.result.value;
+    if (v === null) {
+      out.textContent = 'not found on chain (account does not exist yet) — address format ok [finalized]';
+    } else {
+      out.textContent = 'exists on chain (lamports: ' + (v.lamports !== undefined ? v.lamports : '?') + ') [finalized]';
+    }
+    status.textContent = 'Updated ' + new Date().toISOString() + ' (live RPC data, no mock).';
+  } catch (e) {
+    out.textContent = 'error: ' + e.message + ' (RPC unreachable? try the other endpoint)';
+    status.textContent = 'RPC check failed honestly — no fake result shown.';
+  }
+}
+
+document.getElementById('generate').addEventListener('click', generate);
+document.getElementById('copy').addEventListener('click', copyUrl);
+document.getElementById('check').addEventListener('click', checkAddress);
+document.getElementById('label').addEventListener('input', updateCounts);
+document.getElementById('message').addEventListener('input', updateCounts);
+document.getElementById('memo').addEventListener('input', updateCounts);
+updateCounts();
+try { metricsInitPanel(); } catch (e) {}
+</script>
+</body>
+</html>

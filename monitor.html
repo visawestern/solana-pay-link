@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zero-Budget Builder: live BTC/EVM balance monitor</title>
+<style>
+body { font-family: system-ui, -apple-system, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+label { display: block; margin-top: 1rem; font-weight: bold; }
+input { width: 100%; padding: 0.5rem; margin-top: 0.25rem; }
+button { margin-top: 1rem; padding: 0.6rem 1.2rem; cursor: pointer; }
+.card { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; margin-top: 1rem; }
+.mono { font-family: monospace; }
+.status { margin-top: 1rem; color: #555; }
+</style>
+</head>
+<body>
+<h1>Zero-Budget Builder: live BTC/EVM balance monitor</h1>
+<p>Static micro-demo for Solana Summit Canada application. No dependencies, no keys, no backend. Live data only via public explorer APIs (<span class="mono">blockstream.info</span> for BTC, <span class="mono">blockcypher.com</span> for EVM) through <span class="mono">fetch</span>.</p>
+
+<label for="btc">BTC address</label>
+<input id="btc" type="text" value="bc1qrhnrxjuap69s08zn47e8jl5a8mxawnhqksewt2">
+
+<label for="evm">EVM address</label>
+<input id="evm" type="text" value="0x8FeB18629688eb51892472e146D2af1d4237bbe2">
+
+<button id="refresh" type="button">Refresh</button>
+<div id="status" class="status">Press Refresh for live data.</div>
+
+<div class="card">
+<h2>BTC</h2>
+<p>tx_count: <span id="btc-tx" class="mono">-</span></p>
+<p>balance: <span id="btc-bal" class="mono">-</span> BTC (sats: <span id="btc-sats" class="mono">-</span>)</p>
+</div>
+
+<div class="card">
+<h2>EVM (Ethereum mainnet)</h2>
+<p>tx_count: <span id="evm-tx" class="mono">-</span></p>
+<p>balance: <span id="evm-bal" class="mono">-</span> ETH (wei: <span id="evm-wei" class="mono">-</span>)</p>
+</div>
+
+<script>
+async function refresh() {
+  var btcAddr = document.getElementById('btc').value.trim();
+  var evmAddr = document.getElementById('evm').value.trim();
+  var status = document.getElementById('status');
+  status.textContent = 'Loading live data...';
+  try {
+    var btcRes = await fetch('https://blockstream.info/api/address/' + encodeURIComponent(btcAddr));
+    if (!btcRes.ok) throw new Error('BTC API HTTP ' + btcRes.status);
+    var btc = await btcRes.json();
+    var btcTx = (btc.chain_stats.tx_count || 0) + (btc.mempool_stats.tx_count || 0);
+    var btcSats = (btc.chain_stats.funded_txo_sum || 0) - (btc.chain_stats.spent_txo_sum || 0)
+      + ((btc.mempool_stats.funded_txo_sum || 0) - (btc.mempool_stats.spent_txo_sum || 0));
+    document.getElementById('btc-tx').textContent = btcTx;
+    document.getElementById('btc-sats').textContent = btcSats;
+    document.getElementById('btc-bal').textContent = (btcSats / 1e8).toFixed(8);
+  } catch (e) {
+    document.getElementById('btc-tx').textContent = 'error';
+    document.getElementById('btc-bal').textContent = 'error: ' + e.message;
+  }
+  try {
+    var evmRes = await fetch('https://api.blockcypher.com/v1/eth/main/addrs/' + encodeURIComponent(evmAddr) + '/balance');
+    if (!evmRes.ok) throw new Error('EVM API HTTP ' + evmRes.status);
+    var evm = await evmRes.json();
+    var evmTx = (evm.n_tx || 0) + (evm.unconfirmed_n_tx || 0);
+    document.getElementById('evm-tx').textContent = evmTx;
+    document.getElementById('evm-wei').textContent = evm.balance || 0;
+    document.getElementById('evm-bal').textContent = ((evm.balance || 0) / 1e18).toString();
+  } catch (e) {
+    document.getElementById('evm-tx').textContent = 'error';
+    document.getElementById('evm-bal').textContent = 'error: ' + e.message;
+  }
+  status.textContent = 'Updated ' + new Date().toISOString() + ' (live API data, no mock).';
+}
+document.getElementById('refresh').addEventListener('click', refresh);
+</script>
+</body>
+</html>
