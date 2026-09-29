@@ -1,0 +1,7 @@
+# solana-pay-link
+
+> Static Solana Pay link generator with on-chain verify — client-only demo, no backend or custody.
+
+- Site: https://visawestern.github.io/solana-pay-link/
+- Static demo, no backend. Open index.html in a browser.
+- License: see LICENSE. Source: https://github.com/visawestern/solana-pay-link
